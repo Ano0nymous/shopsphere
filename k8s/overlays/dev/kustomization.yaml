@@ -1,0 +1,37 @@
+# Local kind/minikube. Build images with `:local` tags (see README) and `kubectl apply -k`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - { name: user-service,         newTag: local }
+  - { name: product-service,      newTag: local }
+  - { name: cart-service,         newTag: local }
+  - { name: order-service,        newTag: local }
+  - { name: payment-service,      newTag: local }
+  - { name: notification-service, newTag: local }
+  - { name: frontend,             newTag: local }
+
+secretGenerator:
+  - name: shopsphere-secrets
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - POSTGRES_PASSWORD=shoppass
+      - DATABASE_URL=postgresql://shop:shoppass@postgres-service:5432/shopsphere
+      - REDIS_URL=redis://redis-service:6379/0
+      - JWT_SECRET=dev-only-jwt-secret-change-me
+      - INTERNAL_API_TOKEN=dev-only-internal-token
+      - STRIPE_SECRET_KEY=sk_test_replace_me   # put your real *test* key in a local, uncommitted patch
+
+patches:
+  # Never pull :local images from a registry
+  - patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+    target:
+      kind: (Rollout|Deployment)
+      labelSelector: app.kubernetes.io/part-of=shopsphere

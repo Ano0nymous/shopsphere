@@ -1,0 +1,59 @@
+# Public API lives under /api/*; the prefix is stripped before reaching a service, so
+# /api/cart -> cart-service:/cart. SPA routes (/cart, /login, ...) therefore never collide.
+# Internal endpoints (PATCH /orders/<id>/status, PATCH /products/<id>/stock) are NOT
+# routed here and are additionally protected by X-Internal-Token.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shopsphere-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api/(products(/[0-9]+)?/?$)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: product-service
+                port:
+                  number: 80
+          - path: /api/(signup/?$)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: user-service
+                port:
+                  number: 80
+          - path: /api/(login/?$)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: user-service
+                port:
+                  number: 80
+          - path: /api/(cart/?$)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: cart-service
+                port:
+                  number: 80
+          - path: /api/(orders/?$)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: order-service
+                port:
+                  number: 80
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

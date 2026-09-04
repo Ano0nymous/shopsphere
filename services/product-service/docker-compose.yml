@@ -1,0 +1,26 @@
+# Run product-service on its own against a local Postgres.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shoppass
+      POSTGRES_DB: shopsphere
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  product-service:
+    build: .
+    ports:
+      - "5000:5000"
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://shop:shoppass@db:5432/shopsphere
+      JWT_SECRET: dev-only-jwt-secret-change-me
+      INTERNAL_API_TOKEN: dev-only-internal-token
+
+volumes:
+  pgdata:

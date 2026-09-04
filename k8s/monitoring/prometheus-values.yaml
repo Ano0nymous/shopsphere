@@ -1,0 +1,22 @@
+# prometheus-values.yaml
+grafana:
+  # Helm does not expand env vars. Pass the password at install time instead:
+  #   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+  #     -n monitoring -f k8s/monitoring/prometheus-values.yaml --set grafana.adminPassword="$GRAFANA_ADMIN_PASSWORD"
+  dashboards:
+    default:
+      node_exporter:
+        gnetId: 1860   # Node Exporter Full
+        revision: 1
+        datasource: Prometheus
+
+prometheus:
+  prometheusSpec:
+    # Keep data for 2 days for testing
+    retention: 2d
+    # Scrape all service monitors automatically
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    # Enable pod monitors too if you want
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelector: {}

@@ -1,0 +1,30 @@
+# secrets — never commit
+argocd/token
+argocd/github-repo-secret.yaml
+k8s/overlays/*/secrets.env
+.env
+.env.*
+!.env.example
+*.tfvars
+!*.tfvars.example
+
+# terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# node
+node_modules/
+dist/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store

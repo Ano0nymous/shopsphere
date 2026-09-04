@@ -1,0 +1,202 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths-ignore:
+      - "k8s/overlays/**"      # image-tag bumps from the deploy workflows must not re-trigger a build
+      - "**.md"
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ------------------------------------------------------------------
+  # Backend: lint + tests for every service, against real Postgres/Redis
+  # ------------------------------------------------------------------
+  backend:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [user-service, product-service, cart-service, order-service, payment-service, notification-service]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: shop
+          POSTGRES_PASSWORD: shoppass
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: services/${{ matrix.service }}/requirements*.txt
+      - name: Install dependencies
+        working-directory: services/${{ matrix.service }}
+        run: |
+          pip install --upgrade pip
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; else pip install -r requirements.txt flake8; fi
+      - name: Lint (flake8)
+        working-directory: services/${{ matrix.service }}
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+      - name: Test (pytest)
+        working-directory: services/${{ matrix.service }}
+        env:
+          TEST_DATABASE_URL: postgresql://shop:shoppass@localhost:5432/shopsphere_test
+          REDIS_URL: redis://localhost:6379/0
+          JWT_SECRET: ci-test-secret
+          INTERNAL_API_TOKEN: ci-internal-token
+        run: |
+          if [ -f test_app.py ]; then pytest test_app.py -v; else echo "No tests for ${{ matrix.service }}"; fi
+
+  # ------------------------------------------------------------------
+  # Frontend: lint + production build
+  # ------------------------------------------------------------------
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - working-directory: frontend
+        run: npm run lint
+      - working-directory: frontend
+        run: npm run build
+
+  # ------------------------------------------------------------------
+  # Kubernetes manifests + Terraform: must at least render / parse
+  # ------------------------------------------------------------------
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: kustomize build every overlay
+        run: |
+          for o in dev prod azure; do
+            [ -f k8s/overlays/$o/secrets.env ] || cp k8s/overlays/$o/secrets.env.example k8s/overlays/$o/secrets.env 2>/dev/null || true
+            kubectl kustomize k8s/overlays/$o > /dev/null && echo "$o renders"
+          done
+      - uses: hashicorp/setup-terraform@v3
+      - name: terraform fmt + validate
+        run: |
+          terraform fmt -check -recursive infra
+          for d in infra/aws infra/azure; do
+            (cd $d && terraform init -backend=false -input=false >/dev/null && terraform validate)
+          done
+
+  # ------------------------------------------------------------------
+  # Build every image once, scan it, push to ECR + ACR, bump overlays
+  # ------------------------------------------------------------------
+  build-push:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend, manifests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [user-service, product-service, cart-service, order-service, payment-service, notification-service, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve build context
+        id: ctx
+        run: |
+          if [ "${{ matrix.service }}" = "frontend" ]; then echo "path=frontend" >> "$GITHUB_OUTPUT"; else echo "path=services/${{ matrix.service }}" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.ctx.outputs.path }}
+          load: true
+          tags: local/${{ matrix.service }}:${{ github.sha }}
+          build-args: |
+            VITE_STRIPE_PUBLISHABLE_KEY=${{ vars.VITE_STRIPE_PUBLISHABLE_KEY }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: local/${{ matrix.service }}:${{ github.sha }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      # ---- AWS ECR ----
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Push to ECR
+        run: |
+          IMG="${{ secrets.ECR_REPO_PREFIX }}/${{ matrix.service }}"
+          docker tag local/${{ matrix.service }}:${{ github.sha }} "$IMG:${{ github.sha }}"
+          docker tag local/${{ matrix.service }}:${{ github.sha }} "$IMG:latest"
+          docker push "$IMG:${{ github.sha }}"
+          docker push "$IMG:latest"
+
+      # ---- Azure ACR ----
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Push to ACR
+        run: |
+          az acr login --name "${{ secrets.AZURE_ACR_NAME }}"
+          IMG="${{ secrets.AZURE_ACR_LOGIN_SERVER }}/${{ matrix.service }}"
+          docker tag local/${{ matrix.service }}:${{ github.sha }} "$IMG:${{ github.sha }}"
+          docker tag local/${{ matrix.service }}:${{ github.sha }} "$IMG:latest"
+          docker push "$IMG:${{ github.sha }}"
+          docker push "$IMG:latest"
+
+  # ------------------------------------------------------------------
+  # GitOps: one commit bumping every overlay to the new SHA (Argo CD syncs it)
+  # ------------------------------------------------------------------
+  update-overlays:
+    needs: build-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITOPS_TOKEN }}   # PAT so the push can be made; paths-ignore stops a rebuild loop
+      - name: Bump image tags
+        run: |
+          SHA="${{ github.sha }}"
+          for svc in user-service product-service cart-service order-service payment-service notification-service frontend; do
+            (cd k8s/overlays/prod  && sed -i -E "s#(name: *$svc, *newName: *[^,]+, *newTag: *)[^ }]+#\1$SHA#" kustomization.yaml)
+            (cd k8s/overlays/azure && sed -i -E "s#(name: *$svc, *newName: *[^,]+, *newTag: *)[^ }]+#\1$SHA#" kustomization.yaml)
+          done
+          git diff --stat
+      - name: Commit and push
+        run: |
+          git config user.name "shopsphere-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git add k8s/overlays/prod/kustomization.yaml k8s/overlays/azure/kustomization.yaml
+          git diff --cached --quiet && { echo "No changes"; exit 0; }
+          git commit -m "ci: deploy ${{ github.sha }} [skip ci]"
+          git push

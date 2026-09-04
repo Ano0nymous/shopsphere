@@ -1,0 +1,27 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: shopsphere-alerts
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: shopsphere
+      rules:
+        - alert: ShopSphereHighErrorRate
+          expr: |
+            sum by (job) (rate(flask_http_request_total{status=~"5.."}[5m]))
+            /
+            sum by (job) (rate(flask_http_request_total[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} 5xx rate above 5% for 5m"
+        - alert: ShopSphereServiceDown
+          expr: up{job=~".*-service"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.job }} has no healthy scrape targets"

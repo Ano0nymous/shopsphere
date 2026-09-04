@@ -1,0 +1,22 @@
+# Canary gate: fail the rollout if >5% of requests to the canary's service return 5xx.
+# Requires kube-prometheus-stack installed as release "monitoring" in namespace "monitoring".
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate-check
+spec:
+  args:
+    - name: service
+  metrics:
+    - name: error-rate
+      interval: 30s
+      count: 3
+      failureLimit: 1
+      successCondition: len(result) == 0 || result[0] < 0.05
+      provider:
+        prometheus:
+          address: http://monitoring-kube-prometheus-prometheus.monitoring.svc:9090
+          query: |
+            sum(rate(flask_http_request_total{job="{{args.service}}", status=~"5.."}[2m]))
+            /
+            clamp_min(sum(rate(flask_http_request_total{job="{{args.service}}"}[2m])), 1e-9)

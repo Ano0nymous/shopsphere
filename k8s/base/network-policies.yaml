@@ -1,0 +1,125 @@
+# Default-deny ingress for every pod in the namespace, then explicit allows per dependency.
+# Egress is left open (services need Stripe, DNS and each other); tighten later if needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+# Ingress controller (namespace ingress-nginx) -> public-facing services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-ingress-controller
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [frontend, user-service, product-service, cart-service, order-service]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: http
+---
+# Prometheus (namespace monitoring) -> /metrics on the Flask services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [user-service, product-service, cart-service, order-service]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: http
+---
+# order-service -> product-service (stock reservation)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-order-to-product
+spec:
+  podSelector:
+    matchLabels:
+      app: product-service
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: order-service
+      ports:
+        - port: http
+---
+# payment-service -> order-service (status updates)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-payment-to-order
+spec:
+  podSelector:
+    matchLabels:
+      app: order-service
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: payment-service
+      ports:
+        - port: http
+---
+# Postgres <- user, product, order
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [user-service, product-service, order-service]
+      ports:
+        - port: postgres
+---
+# Redis <- cart, order, payment, notification
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [cart-service, order-service, payment-service, notification-service]
+      ports:
+        - port: redis

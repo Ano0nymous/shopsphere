@@ -1,0 +1,28 @@
+# Replace ECR_REPO_PREFIX below with the `ecr_repo_prefix` output of infra/aws (it is a public hostname, not a secret).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: shopsphere-prod
+
+resources:
+  - ../../base
+
+# CI updates newTag to the commit SHA on every merge to main (never :latest).
+images:
+  - { name: user-service,         newName: ECR_REPO_PREFIX/user-service,         newTag: latest }
+  - { name: product-service,      newName: ECR_REPO_PREFIX/product-service,      newTag: latest }
+  - { name: cart-service,         newName: ECR_REPO_PREFIX/cart-service,         newTag: latest }
+  - { name: order-service,        newName: ECR_REPO_PREFIX/order-service,        newTag: latest }
+  - { name: payment-service,      newName: ECR_REPO_PREFIX/payment-service,      newTag: latest }
+  - { name: notification-service, newName: ECR_REPO_PREFIX/notification-service, newTag: latest }
+  - { name: frontend,             newName: ECR_REPO_PREFIX/frontend,             newTag: latest }
+
+# Copy secrets.env.example -> secrets.env (git-ignored) and fill in real values.
+# With Argo CD, apply the secret out-of-band instead (kubectl / Sealed Secrets / External Secrets):
+#   kubectl -n shopsphere-prod create secret generic shopsphere-secrets --from-env-file=secrets.env
+secretGenerator:
+  - name: shopsphere-secrets
+    options:
+      disableNameSuffixHash: true
+    envs:
+      - secrets.env
